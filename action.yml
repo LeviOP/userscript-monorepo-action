@@ -1,0 +1,10 @@
+name: "Userscript Monorepo Release"
+description: "Release all userscripts in a monorepo workspace"
+author: "LeviOP"
+inputs:
+  userscripts-dir:
+    description: "Directory containing userscript subprojects"
+    required: true
+runs:
+  using: "node20"
+  main: "dist/index.js"
