@@ -1,132 +1,253 @@
-import { getInput, info, setFailed } from "@actions/core";
+import { getInput, info, error, setFailed } from "@actions/core";
 import { context, getOctokit } from "@actions/github";
 import { glob } from "glob";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 
-async function run(): Promise<void> {
-    try {
-        const token = process.env.GITHUB_TOKEN;
-        if (token === undefined) throw Error("Token was undefined for some reason.");
-
-        const octokit = getOctokit(token);
-        const userscriptsDirectory = getInput("userscripts-dir", { required: true });
-        const userscriptDirectories = (await readdir(userscriptsDirectory, { withFileTypes: true }))
-            .filter((d) => d.isDirectory())
-            .map((d) => d.name);
-        for (const dirName of userscriptDirectories) {
-            const userscriptDirectory = path.join(userscriptsDirectory, dirName);
-            const packagePath = path.join(userscriptDirectory, "package.json");
-            const packageRaw = await readFile(packagePath,  { encoding: "utf-8" });
-            const packageJson = JSON.parse(packageRaw);
-
-            if (typeof packageJson !== "object" || packageJson === null) throw Error(packagePath + " was not an object!");
-
-            if (!("name" in packageJson)) throw Error(`package.json did not have a "name" property!`);
-            const { name } = packageJson;
-            if (typeof name !== "string") throw Error(`package.json "name" property was not a string!`);
-
-            if (!("version" in packageJson)) throw Error(`package.json did not have a "versoin" property!`);
-            const { version } = packageJson;
-            if (typeof version !== "string") throw Error(`package.json "version" property was not a string!`);
-
-            if (!("files" in packageJson)) throw Error(`package.json did not have a "files" property!`);
-            const { files: filesArray } = packageJson;
-            if (!Array.isArray(filesArray)) throw Error(`package.json "files" proprety was not an array!`);
-            if (!filesArray.every((v) => typeof v === "string")) throw Error(`package.json "files" array was not all strings!`);
-
-            const fileNames = await glob(filesArray, { cwd: userscriptDirectory, ignore: [
-                "*.orig",
-                ".*.swp",
-                ".DS_Store",
-                "._*",
-                ".git",
-                ".hg",
-                ".lock-wscript",
-                ".npmrc",
-                ".svn",
-                ".wafpickle-N",
-                "CVS",
-                "config.gypi",
-                "node_modules",
-                "npm-debug.log",
-                "package-lock.json",
-                "pnpm-lock.yaml",
-                "yarn.lock",
-                "bun.lockb",
-                ".git",
-                ".npmrc",
-                "node_modules",
-                "package-lock.json",
-                "pnpm-lock.yaml",
-                "yarn.lock",
-                "bun.lockb"
-            ]});
-
-            const files = await Promise.all(fileNames.map<Promise<[string, string]>>(async (fileName) => ([path.basename(fileName), await readFile(path.join(userscriptDirectory, fileName), { encoding: "utf-8" })])));
-
-            const tag = name + "@" + version;
-
-            if (execSync(`git tag -l "${tag}"`).toString() !== "") continue;
-
-            try {
-                execSync(`git tag ${tag}`);
-                execSync(`git push origin ${tag}`);
-            } catch (err) {
-                info(`There was some error pushing or setting the tag????`);
-            }
-
-            const latest = name + "@latest";
-
-            const { owner, repo } = context.repo;
-
-            try {
-                const existingLatestRelease = await octokit.rest.repos.getReleaseByTag({
-                    owner,
-                    repo,
-                    tag: latest
-                });
-
-                await octokit.rest.repos.deleteRelease({
-                    owner,
-                    repo,
-                    release_id: existingLatestRelease.data.id
-                });
-            } catch {}
-
-            try {
-                execSync(`git tag -f ${latest}`);
-                execSync(`git push origin -f ${latest}`);
-            } catch (err) {
-                info(`Failed to update latest tag: ${err}`);
-            }
-
-            const createRelease = async function(tagName: string) {
-                const release = await octokit.rest.repos.createRelease({
-                    owner,
-                    repo,
-                    tag_name: tagName,
-                    name: tagName,
-                    draft: false,
-                    prerelease: false,
-                    make_latest: "false"
-                });
-
-                await Promise.all(files.map(async ([fileName, file]) => await octokit.rest.repos.uploadReleaseAsset({
-                    owner,
-                    repo,
-                    release_id: release.data.id,
-                    name: fileName,
-                    data: file
-                })));
-            }
-
-            await Promise.all([latest, tag].map((tagName) => createRelease(tagName)))
-        }
-    } catch (error) {
-        setFailed((error as Error)?.message ?? error);
-    }
+interface CommitAuthor {
+    date?: string,
+    email: string | null,
+    name: string,
+    username?: string,
 }
 
-run();
+interface Commit {
+    added?: string[],
+    author: CommitAuthor,
+    committer: CommitAuthor,
+    distinct: boolean,
+    id: string,
+    message: string,
+    modified?: string[],
+    removed?: string[],
+    timestamp: string,
+    tree_id: string,
+    url: string,
+}
+
+const EMPTY_BEFORE_SHA = "0000000000000000000000000000000000000000";
+
+async function getPotentialPackageDirs(userscriptsDirectory: string): Promise<string[]> {
+    return (await readdir(userscriptsDirectory, { withFileTypes: true }))
+        .filter((dirent) => dirent.isDirectory())
+        .map((dirent) => dirent.name);
+}
+
+interface LoadedPackage {
+    name: string;
+    version: string;
+    files: [fileName: string, content: string][];
+    outputHash: string;
+    commitSha: string;
+}
+
+async function tryLoadPackage(userscriptsDir: string, dirName: string, commitSha: string): Promise<LoadedPackage | null> {
+    const dir = path.join(userscriptsDir, dirName);
+    const packagePath = path.join(dir, "package.json");
+
+    let packageRaw: string;
+    try {
+        packageRaw = await readFile(packagePath, { encoding: "utf-8" });
+    } catch {
+        return null;
+    }
+
+    const packageJson = JSON.parse(packageRaw);
+
+    if (typeof packageJson !== "object" || packageJson === null) throw Error(`${packagePath} was not an object!`);
+
+    if (!("name" in packageJson)) throw Error(`${packagePath} did not have a "name" property!`);
+    const { name } = packageJson;
+    if (typeof name !== "string") throw Error(`${packagePath} "name" property was not a string!`);
+
+    if (!("version" in packageJson)) throw Error(`${packagePath} did not have a "version" property!`);
+    const { version } = packageJson;
+    if (typeof version !== "string") throw Error(`${packagePath} "version" property was not a string!`);
+
+    if (!("files" in packageJson)) throw Error(`${packagePath} did not have a "files" property!`);
+    const { files: filesArray } = packageJson;
+    if (!Array.isArray(filesArray)) throw Error(`${packagePath} "files" property was not an array!`);
+    if (!filesArray.every((v) => typeof v === "string")) throw Error(`${packagePath} "files" array was not all strings!`);
+
+    const fileNames = await glob(filesArray, { cwd: dir });
+
+    const files = await Promise.all(
+        fileNames.map<Promise<[string, string]>>(async (fileName) => [
+            path.basename(fileName),
+            await readFile(path.join(dir, fileName), { encoding: "utf-8" }),
+        ]),
+    );
+
+    const hash = createHash("sha256");
+    for (const [fileName, content] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
+        hash.update(fileName);
+        hash.update("\0");
+        hash.update(content);
+        hash.update("\0");
+    }
+
+    return { name, version, files, outputHash: hash.digest("hex"), commitSha };
+}
+
+async function publishTagAndRelease(
+    octokit: ReturnType<typeof getOctokit>,
+    owner: string,
+    repo: string,
+    sha: string,
+    tagName: string,
+    files: [string, string][],
+    forceMoveTag: boolean,
+) {
+    const tagExists = execSync(`git tag -l "${tagName}"`).toString().trim() !== "";
+
+    if (tagExists) {
+        if (!forceMoveTag) {
+            info(`Tag ${tagName} already exists, skipping`);
+            return;
+        }
+
+        execSync(`git tag -f ${tagName} ${sha}`);
+        execSync(`git push origin -f refs/tags/${tagName}`);
+
+        try {
+            const existing = await octokit.rest.repos.getReleaseByTag({ owner, repo, tag: tagName });
+            await octokit.rest.repos.deleteRelease({ owner, repo, release_id: existing.data.id });
+        } catch {
+            // getReleaseByTag throws if nothing found, I think - it's okay if it doesn't exist, we're going to create it
+        }
+    } else {
+        execSync(`git tag ${tagName} ${sha}`);
+        execSync(`git push origin refs/tags/${tagName}`);
+    }
+
+    const release = await octokit.rest.repos.createRelease({
+        owner,
+        repo,
+        tag_name: tagName,
+        name: tagName,
+        target_commitish: sha,
+        draft: false,
+        prerelease: false,
+        make_latest: "false",
+    });
+
+    await Promise.all(
+        files.map(([fileName, content]) =>
+            octokit.rest.repos.uploadReleaseAsset({
+                owner,
+                repo,
+                release_id: release.data.id,
+                name: fileName,
+                data: content,
+            }),
+        ),
+    );
+}
+
+interface PackageState {
+    lastVersion: string | null,
+    versionHasChanged: boolean,
+    latestVersionedPackage?: LoadedPackage,
+    lastOutputHash: string | null,
+    hashHasChanged: boolean,
+    latestDevPackage?: LoadedPackage,
+}
+
+async function run() {
+    if (context.eventName !== "push") throw Error(`userscript-monorepo-action expects to be run on 'push' event! (got ${context.eventName})`);
+
+    const token = getInput("token");
+    const octokit = getOctokit(token);
+
+    const userscriptsDirectory = getInput("userscripts-dir", { required: true });
+    const buildCommand = getInput("build-command");
+
+    const commits = context.payload.commits as Commit[];
+    if (commits.length === 0) {
+        info("No commits in this push. Nothing to do.");
+        return;
+    }
+
+    const commitShas = commits.map(commit => commit.id);
+
+    const before = context.payload.before;
+
+    const state: Record<string, PackageState> = {};
+
+    if (before !== EMPTY_BEFORE_SHA) {
+        execSync(`git fetch --depth=1 origin ${before}`);
+        execSync(`git checkout ${before}`);
+        execSync(buildCommand);
+
+        for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
+            const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, before).catch((err: Error) => {
+                error(err);
+                return null;
+            });
+            if (loadedPackage === null) continue;
+
+            state[loadedPackage.name] = {
+                lastVersion: loadedPackage.version,
+                versionHasChanged: false,
+                lastOutputHash: loadedPackage.outputHash,
+                hashHasChanged: false,
+            };
+        }
+    }
+
+    for (const commitSha of commitShas) {
+        execSync(`git fetch --depth=1 origin ${commitSha}`);
+        execSync(`git checkout ${commitSha}`);
+        execSync(buildCommand);
+
+        for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
+            const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, commitSha).catch((err: Error) => {
+                error(err);
+                return null;
+            });
+            if (loadedPackage === null) continue;
+
+            let packageEntry = state[loadedPackage.name];
+            if (packageEntry === undefined) {
+                packageEntry = state[loadedPackage.name] = { lastVersion: null, versionHasChanged: false, lastOutputHash: null, hashHasChanged: false };
+            }
+
+            if (loadedPackage.outputHash !== packageEntry.lastOutputHash) {
+                packageEntry.hashHasChanged = true;
+                packageEntry.latestDevPackage = loadedPackage;
+            }
+
+            if (loadedPackage.version !== packageEntry.lastVersion) {
+                // TODO: what if it's a lower (or already existing) version string?
+                const tag = `${loadedPackage.name}@${loadedPackage.version}`;
+                await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, commitSha, tag, loadedPackage.files, false);
+                packageEntry.versionHasChanged = true;
+                packageEntry.latestVersionedPackage = loadedPackage;
+            }
+
+            packageEntry.lastVersion = loadedPackage.version;
+            packageEntry.lastOutputHash = loadedPackage.outputHash;
+        }
+    }
+
+    for (const packageEntry of Object.values(state)) {
+        if (packageEntry.versionHasChanged) {
+            const loadedPackage = packageEntry.latestVersionedPackage!;
+            const tag = `${loadedPackage.name}@latest`;
+            await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, loadedPackage.commitSha, tag, loadedPackage.files, true)
+        }
+        if (packageEntry.hashHasChanged) {
+            const loadedPackage = packageEntry.latestDevPackage!;
+            const tag = `${loadedPackage.name}@dev`;
+            await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, loadedPackage.commitSha, tag, loadedPackage.files, true)
+        }
+    }
+
+    execSync(`git checkout ${context.payload.after}`);
+}
+
+run().catch((error) => {
+    setFailed((error as Error)?.message ?? error);
+});

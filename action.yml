@@ -1,10 +1,16 @@
 name: "Userscript Monorepo Release"
-description: "Release all userscripts in a monorepo workspace"
 author: "LeviOP"
+description: "Builds and creates releases for userscripts in a monorepo, automatically tagging on every version bump"
 inputs:
   userscripts-dir:
-    description: "Directory containing userscript subprojects"
+    description: "Directory containing userscript packages"
     required: true
+  build-command:
+    description: "Command to run at each commit checkout to install dependencies and build userscripts"
+    required: false
+  token:
+    description: "GitHub token used to create releases and tags"
+    default: ${{ github.token }}
 runs:
-  using: "node20"
+  using: "node24"
   main: "dist/index.js"
