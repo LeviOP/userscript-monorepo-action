@@ -1,7 +1,7 @@
 import { getInput, info, error, setFailed } from "@actions/core";
 import { context, getOctokit } from "@actions/github";
 import { glob } from "glob";
-import { execSync } from "node:child_process";
+import { execSync, SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
@@ -178,8 +178,17 @@ async function run() {
 
     if (before !== EMPTY_BEFORE_SHA) {
         execSync(`git fetch --depth=1 origin ${before}`);
-        execSync(`git checkout ${before}`);
-        execSync(buildCommand);
+        execSync(`git checkout --quiet ${before}`);
+        try {
+            execSync(buildCommand);
+        } catch (e) {
+            const error = e as Error & SpawnSyncReturns<Buffer>;
+            throw Error([
+                `Error executing build command: ${error.message}`,
+                error.stdout.toString(),
+                error.stderr.toString(),
+            ].filter(Boolean).join("\n"));
+        }
 
         for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
             const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, before).catch((err: Error) => {
@@ -199,8 +208,17 @@ async function run() {
 
     for (const commitSha of commitShas) {
         execSync(`git fetch --depth=1 origin ${commitSha}`);
-        execSync(`git checkout ${commitSha}`);
-        execSync(buildCommand);
+        execSync(`git checkout --quiet ${commitSha}`);
+        try {
+            execSync(buildCommand);
+        } catch (e) {
+            const error = e as Error & SpawnSyncReturns<Buffer>;
+            throw Error([
+                `Error executing build command: ${error.message}`,
+                error.stdout.toString(),
+                error.stderr.toString(),
+            ].filter(Boolean).join("\n"));
+        }
 
         for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
             const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, commitSha).catch((err: Error) => {
@@ -245,9 +263,9 @@ async function run() {
         }
     }
 
-    execSync(`git checkout ${context.payload.after}`);
+    execSync(`git checkout --quiet ${context.payload.after}`);
 }
 
-run().catch((error) => {
-    setFailed((error as Error)?.message ?? error);
+run().catch((err: Error) => {
+    setFailed(err);
 });

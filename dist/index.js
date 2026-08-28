@@ -37097,8 +37097,18 @@ async function run() {
     const state = {};
     if (before !== EMPTY_BEFORE_SHA) {
         (0,external_node_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${before}`);
-        (0,external_node_child_process_namespaceObject.execSync)(`git checkout ${before}`);
-        (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
+        (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${before}`);
+        try {
+            (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
+        }
+        catch (e) {
+            const error = e;
+            throw Error([
+                `Error executing build command: ${error.message}`,
+                error.stdout.toString(),
+                error.stderr.toString(),
+            ].filter(Boolean).join("\n"));
+        }
         for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
             const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, before).catch((err) => {
                 error(err);
@@ -37116,8 +37126,18 @@ async function run() {
     }
     for (const commitSha of commitShas) {
         (0,external_node_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${commitSha}`);
-        (0,external_node_child_process_namespaceObject.execSync)(`git checkout ${commitSha}`);
-        (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
+        (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${commitSha}`);
+        try {
+            (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
+        }
+        catch (e) {
+            const error = e;
+            throw Error([
+                `Error executing build command: ${error.message}`,
+                error.stdout.toString(),
+                error.stderr.toString(),
+            ].filter(Boolean).join("\n"));
+        }
         for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
             const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, commitSha).catch((err) => {
                 error(err);
@@ -37156,9 +37176,9 @@ async function run() {
             await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, loadedPackage.files, true);
         }
     }
-    (0,external_node_child_process_namespaceObject.execSync)(`git checkout ${github_context.payload.after}`);
+    (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${github_context.payload.after}`);
 }
-run().catch((error) => {
-    setFailed(error?.message ?? error);
+run().catch((err) => {
+    setFailed(err);
 });
 
