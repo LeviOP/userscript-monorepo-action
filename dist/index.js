@@ -37092,13 +37092,16 @@ async function run() {
         info("No commits in this push. Nothing to do.");
         return;
     }
+    info(`Analyzing ${commits.length} commits`);
     const commitShas = commits.map(commit => commit.id);
     const before = github_context.payload.before;
     const state = {};
     if (before !== EMPTY_BEFORE_SHA) {
+        info("Checkout out commit before push");
         (0,external_node_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${before}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${before}`);
         try {
+            info("Running build command");
             (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
         }
         catch (e) {
@@ -37116,6 +37119,7 @@ async function run() {
             });
             if (loadedPackage === null)
                 continue;
+            info(`Loading package "${loadedPackage.name}"`);
             state[loadedPackage.name] = {
                 lastVersion: loadedPackage.version,
                 versionHasChanged: false,
@@ -37125,9 +37129,11 @@ async function run() {
         }
     }
     for (const commitSha of commitShas) {
+        info(`Checking out ${commitSha}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${commitSha}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${commitSha}`);
         try {
+            info("Running build command");
             (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
         }
         catch (e) {
@@ -37149,6 +37155,7 @@ async function run() {
             if (packageEntry === undefined) {
                 packageEntry = state[loadedPackage.name] = { lastVersion: null, versionHasChanged: false, lastOutputHash: null, hashHasChanged: false };
             }
+            info(`Analyzing package "${loadedPackage.name}"`);
             if (loadedPackage.outputHash !== packageEntry.lastOutputHash) {
                 packageEntry.hashHasChanged = true;
                 packageEntry.latestDevPackage = loadedPackage;

@@ -170,6 +170,8 @@ async function run() {
         return;
     }
 
+    info(`Analyzing ${commits.length} commits`);
+
     const commitShas = commits.map(commit => commit.id);
 
     const before = context.payload.before;
@@ -177,9 +179,11 @@ async function run() {
     const state: Record<string, PackageState> = {};
 
     if (before !== EMPTY_BEFORE_SHA) {
+        info("Checkout out commit before push");
         execSync(`git fetch --depth=1 origin ${before}`);
         execSync(`git checkout --quiet ${before}`);
         try {
+            info("Running build command");
             execSync(buildCommand);
         } catch (e) {
             const error = e as Error & SpawnSyncReturns<Buffer>;
@@ -197,6 +201,8 @@ async function run() {
             });
             if (loadedPackage === null) continue;
 
+            info(`Loading package "${loadedPackage.name}"`);
+
             state[loadedPackage.name] = {
                 lastVersion: loadedPackage.version,
                 versionHasChanged: false,
@@ -207,9 +213,11 @@ async function run() {
     }
 
     for (const commitSha of commitShas) {
+        info(`Checking out ${commitSha}`);
         execSync(`git fetch --depth=1 origin ${commitSha}`);
         execSync(`git checkout --quiet ${commitSha}`);
         try {
+            info("Running build command");
             execSync(buildCommand);
         } catch (e) {
             const error = e as Error & SpawnSyncReturns<Buffer>;
@@ -231,6 +239,8 @@ async function run() {
             if (packageEntry === undefined) {
                 packageEntry = state[loadedPackage.name] = { lastVersion: null, versionHasChanged: false, lastOutputHash: null, hashHasChanged: false };
             }
+
+            info(`Analyzing package "${loadedPackage.name}"`);
 
             if (loadedPackage.outputHash !== packageEntry.lastOutputHash) {
                 packageEntry.hashHasChanged = true;
