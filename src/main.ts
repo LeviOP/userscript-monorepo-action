@@ -100,6 +100,7 @@ async function publishTagAndRelease(
     files: [string, string][],
     forceMoveTag: boolean,
 ) {
+    info(`Creating new release ${tagName}`);
     const tagExists = execSync(`git tag -l "${tagName}"`).toString().trim() !== "";
 
     if (tagExists) {
@@ -170,7 +171,7 @@ async function run() {
         return;
     }
 
-    info(`Analyzing ${commits.length} commits`);
+    info(`Analyzing ${commits.length} commit${commits.length === 1 ? "" : "s"}`);
 
     const commitShas = commits.map(commit => commit.id);
 
@@ -180,7 +181,7 @@ async function run() {
 
     if (before !== EMPTY_BEFORE_SHA) {
         info("Checkout out commit before push");
-        execSync(`git fetch --depth=1 origin ${before}`);
+        execSync(`git fetch --quiet --depth=1 origin ${before}`);
         execSync(`git checkout --quiet ${before}`);
         try {
             info("Running build command");
@@ -214,7 +215,7 @@ async function run() {
 
     for (const commitSha of commitShas) {
         info(`Checking out ${commitSha}`);
-        execSync(`git fetch --depth=1 origin ${commitSha}`);
+        execSync(`git fetch --quiet --depth=1 origin ${commitSha}`);
         execSync(`git checkout --quiet ${commitSha}`);
         try {
             info("Running build command");

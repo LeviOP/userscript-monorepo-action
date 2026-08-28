@@ -37042,6 +37042,7 @@ async function tryLoadPackage(userscriptsDir, dirName, commitSha) {
     return { name, version, files, outputHash: hash.digest("hex"), commitSha };
 }
 async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, forceMoveTag) {
+    info(`Creating new release ${tagName}`);
     const tagExists = (0,external_node_child_process_namespaceObject.execSync)(`git tag -l "${tagName}"`).toString().trim() !== "";
     if (tagExists) {
         if (!forceMoveTag) {
@@ -37092,13 +37093,13 @@ async function run() {
         info("No commits in this push. Nothing to do.");
         return;
     }
-    info(`Analyzing ${commits.length} commits`);
+    info(`Analyzing ${commits.length} commit${commits.length === 1 ? "" : "s"}`);
     const commitShas = commits.map(commit => commit.id);
     const before = github_context.payload.before;
     const state = {};
     if (before !== EMPTY_BEFORE_SHA) {
         info("Checkout out commit before push");
-        (0,external_node_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${before}`);
+        (0,external_node_child_process_namespaceObject.execSync)(`git fetch --quiet --depth=1 origin ${before}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${before}`);
         try {
             info("Running build command");
@@ -37130,7 +37131,7 @@ async function run() {
     }
     for (const commitSha of commitShas) {
         info(`Checking out ${commitSha}`);
-        (0,external_node_child_process_namespaceObject.execSync)(`git fetch --depth=1 origin ${commitSha}`);
+        (0,external_node_child_process_namespaceObject.execSync)(`git fetch --quiet --depth=1 origin ${commitSha}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${commitSha}`);
         try {
             info("Running build command");
