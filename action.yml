@@ -5,8 +5,11 @@ inputs:
   userscripts-dir:
     description: "Directory containing userscript packages"
     required: true
+  setup-command:
+    description: "Setup command run at the repository root to setup builds (usually installing dependencies)"
+    required: false
   build-command:
-    description: "Command to run at each commit checkout to install dependencies and build userscripts"
+    description: "Command to run at each commit checkout for each userscript package"
     required: false
   token:
     description: "GitHub token used to create releases and tags"

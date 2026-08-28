@@ -36992,17 +36992,16 @@ var external_node_crypto_ = __nccwpck_require__(7598);
 
 
 const EMPTY_BEFORE_SHA = "0000000000000000000000000000000000000000";
-async function getPotentialPackageDirs(userscriptsDirectory) {
-    return (await (0,promises_namespaceObject.readdir)(userscriptsDirectory, { withFileTypes: true }))
+async function getPotentialPackageDirs(userscriptsDir) {
+    return (await (0,promises_namespaceObject.readdir)(userscriptsDir, { withFileTypes: true }))
         .filter((dirent) => dirent.isDirectory())
-        .map((dirent) => dirent.name);
+        .map((dirent) => external_node_path_namespaceObject.join(userscriptsDir, dirent.name));
 }
-async function tryLoadPackage(userscriptsDir, dirName, commitSha) {
-    const dir = external_node_path_namespaceObject.join(userscriptsDir, dirName);
-    const packagePath = external_node_path_namespaceObject.join(dir, "package.json");
+async function tryLoadPackage(packagePath, commitSha) {
+    const packageJsonPath = external_node_path_namespaceObject.join(packagePath, "package.json");
     let packageRaw;
     try {
-        packageRaw = await (0,promises_namespaceObject.readFile)(packagePath, { encoding: "utf-8" });
+        packageRaw = await (0,promises_namespaceObject.readFile)(packageJsonPath, { encoding: "utf-8" });
     }
     catch {
         return null;
@@ -37022,24 +37021,49 @@ async function tryLoadPackage(userscriptsDir, dirName, commitSha) {
         throw Error(`${packagePath} "version" property was not a string!`);
     if (!("files" in packageJson))
         throw Error(`${packagePath} did not have a "files" property!`);
-    const { files: filesArray } = packageJson;
-    if (!Array.isArray(filesArray))
+    const { files } = packageJson;
+    if (!Array.isArray(files))
         throw Error(`${packagePath} "files" property was not an array!`);
-    if (!filesArray.every((v) => typeof v === "string"))
+    if (!files.every((v) => typeof v === "string"))
         throw Error(`${packagePath} "files" array was not all strings!`);
-    const fileNames = await Ze(filesArray, { cwd: dir });
-    const files = await Promise.all(fileNames.map(async (fileName) => [
-        external_node_path_namespaceObject.basename(fileName),
-        await (0,promises_namespaceObject.readFile)(external_node_path_namespaceObject.join(dir, fileName), { encoding: "utf-8" }),
+    return { name, version, files, path: packagePath, commitSha };
+}
+async function tryBuildPackage(loadedPackage, buildCommand, metadata) {
+    try {
+        info("Running build command");
+        (0,external_node_child_process_namespaceObject.execSync)(buildCommand, {
+            cwd: loadedPackage.path,
+            env: {
+                ...process.env,
+                USERSCRIPT_DOWNLOAD_URL: metadata.downloadURL,
+                USERSCRIPT_UPDATE_URL: metadata.updateURL,
+            }
+        });
+    }
+    catch (e) {
+        const error = e;
+        throw Error([
+            `Error executing build command: ${error.message}`,
+            error.stdout.toString(),
+            error.stderr.toString(),
+        ].filter(Boolean).join("\n"));
+    }
+    const fileNames = await Ze(loadedPackage.files, { cwd: loadedPackage.path });
+    const files = await Promise.all(fileNames.map(async (filename) => [
+        filename,
+        await (0,promises_namespaceObject.readFile)(external_node_path_namespaceObject.join(loadedPackage.path, filename)),
     ]));
+    return { files };
+}
+function hashPackage(builtPackage) {
     const hash = (0,external_node_crypto_.createHash)("sha256");
-    for (const [fileName, content] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [fileName, content] of [...builtPackage.files].sort(([a], [b]) => a.localeCompare(b))) {
         hash.update(fileName);
         hash.update("\0");
         hash.update(content);
         hash.update("\0");
     }
-    return { name, version, files, outputHash: hash.digest("hex"), commitSha };
+    return hash.digest("hex");
 }
 async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, forceMoveTag) {
     info(`Creating new release ${tagName}`);
@@ -37078,15 +37102,17 @@ async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, f
         repo,
         release_id: release.data.id,
         name: fileName,
-        data: content,
+        data: content.toString(),
     })));
 }
+const downloadBase = `https://github.com/${github_context.repo.owner}/${github_context.repo.repo}/releases/download/`;
 async function run() {
     if (github_context.eventName !== "push")
         throw Error(`userscript-monorepo-action expects to be run on 'push' event! (got ${github_context.eventName})`);
     const token = getInput("token");
     const octokit = getOctokit(token);
-    const userscriptsDirectory = getInput("userscripts-dir", { required: true });
+    const userscriptsDir = getInput("userscripts-dir", { required: true });
+    const setupCommand = getInput("setup-command");
     const buildCommand = getInput("build-command");
     const commits = github_context.payload.commits;
     if (commits.length === 0) {
@@ -37102,29 +37128,37 @@ async function run() {
         (0,external_node_child_process_namespaceObject.execSync)(`git fetch --quiet --depth=1 origin ${before}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${before}`);
         try {
-            info("Running build command");
-            (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
+            info("Running setup command");
+            (0,external_node_child_process_namespaceObject.execSync)(setupCommand);
         }
         catch (e) {
             const error = e;
             throw Error([
-                `Error executing build command: ${error.message}`,
+                `Error executing setup command: ${error.message}`,
                 error.stdout.toString(),
                 error.stderr.toString(),
             ].filter(Boolean).join("\n"));
         }
-        for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
-            const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, before).catch((err) => {
+        for (const packagePath of await getPotentialPackageDirs(userscriptsDir)) {
+            const loadedPackage = await tryLoadPackage(packagePath, before).catch((err) => {
                 error(err);
                 return null;
             });
             if (loadedPackage === null)
                 continue;
-            info(`Loading package "${loadedPackage.name}"`);
+            info(`Loaded package "${loadedPackage.name}"`);
+            const builtPackage = await tryBuildPackage(loadedPackage, buildCommand, {}).catch((err) => {
+                error(err);
+                return null;
+            });
+            if (builtPackage === null)
+                continue;
+            info(`Built package ${loadedPackage.name}"`);
+            const hash = hashPackage(builtPackage);
             state[loadedPackage.name] = {
                 lastVersion: loadedPackage.version,
                 versionHasChanged: false,
-                lastOutputHash: loadedPackage.outputHash,
+                lastOutputHash: hash,
                 hashHasChanged: false,
             };
         }
@@ -37134,54 +37168,125 @@ async function run() {
         (0,external_node_child_process_namespaceObject.execSync)(`git fetch --quiet --depth=1 origin ${commitSha}`);
         (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${commitSha}`);
         try {
-            info("Running build command");
-            (0,external_node_child_process_namespaceObject.execSync)(buildCommand);
+            info("Running setup command");
+            (0,external_node_child_process_namespaceObject.execSync)(setupCommand);
         }
         catch (e) {
             const error = e;
             throw Error([
-                `Error executing build command: ${error.message}`,
+                `Error executing setup command: ${error.message}`,
                 error.stdout.toString(),
                 error.stderr.toString(),
             ].filter(Boolean).join("\n"));
         }
-        for (const dirname of await getPotentialPackageDirs(userscriptsDirectory)) {
-            const loadedPackage = await tryLoadPackage(userscriptsDirectory, dirname, commitSha).catch((err) => {
+        for (const packagePath of await getPotentialPackageDirs(userscriptsDir)) {
+            const loadedPackage = await tryLoadPackage(packagePath, commitSha).catch((err) => {
                 error(err);
                 return null;
             });
             if (loadedPackage === null)
                 continue;
+            info(`Loaded package "${loadedPackage.name}"`);
+            const builtPackage = await tryBuildPackage(loadedPackage, buildCommand, {}).catch((err) => {
+                error(err);
+                return null;
+            });
+            if (builtPackage === null)
+                continue;
+            info(`Built package ${loadedPackage.name}"`);
+            const hash = hashPackage(builtPackage);
             let packageEntry = state[loadedPackage.name];
             if (packageEntry === undefined) {
                 packageEntry = state[loadedPackage.name] = { lastVersion: null, versionHasChanged: false, lastOutputHash: null, hashHasChanged: false };
             }
             info(`Analyzing package "${loadedPackage.name}"`);
-            if (loadedPackage.outputHash !== packageEntry.lastOutputHash) {
+            if (hash !== packageEntry.lastOutputHash) {
                 packageEntry.hashHasChanged = true;
                 packageEntry.latestDevPackage = loadedPackage;
             }
             if (loadedPackage.version !== packageEntry.lastVersion) {
                 // TODO: what if it's a lower (or already existing) version string?
                 const tag = `${loadedPackage.name}@${loadedPackage.version}`;
-                await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, commitSha, tag, loadedPackage.files, false);
+                let scriptName = undefined;
+                let metaName = undefined;
+                for (const [filename] of builtPackage.files) {
+                    if (filename.endsWith(".user.js"))
+                        scriptName = external_node_path_namespaceObject.basename(filename);
+                    else if (filename.endsWith(".meta.js"))
+                        metaName = external_node_path_namespaceObject.basename(filename);
+                }
+                const metadata = {};
+                if (scriptName)
+                    metadata.downloadURL = downloadBase + tag + "/" + scriptName;
+                if (metaName)
+                    metadata.updateURL = downloadBase + tag + "/" + metaName;
+                const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata);
+                if (versionedBuiltPackage === null)
+                    continue;
+                await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, commitSha, tag, versionedBuiltPackage.files, false);
                 packageEntry.versionHasChanged = true;
                 packageEntry.latestVersionedPackage = loadedPackage;
             }
             packageEntry.lastVersion = loadedPackage.version;
-            packageEntry.lastOutputHash = loadedPackage.outputHash;
+            packageEntry.lastOutputHash = hash;
         }
     }
     for (const packageEntry of Object.values(state)) {
         if (packageEntry.versionHasChanged) {
             const loadedPackage = packageEntry.latestVersionedPackage;
+            (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${loadedPackage.commitSha}`);
             const tag = `${loadedPackage.name}@latest`;
-            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, loadedPackage.files, true);
+            const builtPackage = await tryBuildPackage(loadedPackage, buildCommand, {}).catch((err) => {
+                error(err);
+                return null;
+            });
+            if (builtPackage === null)
+                continue;
+            let scriptName = undefined;
+            let metaName = undefined;
+            for (const [filename] of builtPackage.files) {
+                if (filename.endsWith(".user.js"))
+                    scriptName = external_node_path_namespaceObject.basename(filename);
+                else if (filename.endsWith(".meta.js"))
+                    metaName = external_node_path_namespaceObject.basename(filename);
+            }
+            const metadata = {};
+            if (scriptName)
+                metadata.downloadURL = downloadBase + tag + "/" + scriptName;
+            if (metaName)
+                metadata.updateURL = downloadBase + tag + "/" + metaName;
+            const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata);
+            if (versionedBuiltPackage === null)
+                continue;
+            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true);
         }
         if (packageEntry.hashHasChanged) {
             const loadedPackage = packageEntry.latestDevPackage;
+            (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${loadedPackage.commitSha}`);
             const tag = `${loadedPackage.name}@dev`;
-            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, loadedPackage.files, true);
+            const builtPackage = await tryBuildPackage(loadedPackage, buildCommand, {}).catch((err) => {
+                error(err);
+                return null;
+            });
+            if (builtPackage === null)
+                continue;
+            let scriptName = undefined;
+            let metaName = undefined;
+            for (const [filename] of builtPackage.files) {
+                if (filename.endsWith(".user.js"))
+                    scriptName = external_node_path_namespaceObject.basename(filename);
+                else if (filename.endsWith(".meta.js"))
+                    metaName = external_node_path_namespaceObject.basename(filename);
+            }
+            const metadata = {};
+            if (scriptName)
+                metadata.downloadURL = downloadBase + tag + "/" + scriptName;
+            if (metaName)
+                metadata.updateURL = downloadBase + tag + "/" + metaName;
+            const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata);
+            if (versionedBuiltPackage === null)
+                continue;
+            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true);
         }
     }
     (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${github_context.payload.after}`);
