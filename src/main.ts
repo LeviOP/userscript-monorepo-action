@@ -177,7 +177,7 @@ async function publishTagAndRelease(
                 owner,
                 repo,
                 release_id: release.data.id,
-                name: fileName,
+                name: path.basename(fileName),
                 data: content.toString(),
             }),
         ),

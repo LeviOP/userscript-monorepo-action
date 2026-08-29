@@ -37101,7 +37101,7 @@ async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, f
         owner,
         repo,
         release_id: release.data.id,
-        name: fileName,
+        name: external_node_path_namespaceObject.basename(fileName),
         data: content.toString(),
     })));
 }
