@@ -213,6 +213,9 @@ async function run() {
 
     info(`Analyzing ${commits.length} commit${commits.length === 1 ? "" : "s"}`);
 
+    // fetch all tags, required for forceMoveTag to work
+    execSync(`git fetch --quiet --tags`);
+
     const commitShas = commits.map(commit => commit.id);
 
     const before = context.payload.before;

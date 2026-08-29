@@ -37120,6 +37120,8 @@ async function run() {
         return;
     }
     info(`Analyzing ${commits.length} commit${commits.length === 1 ? "" : "s"}`);
+    // fetch all tags, required for forceMoveTag to work
+    (0,external_node_child_process_namespaceObject.execSync)(`git fetch --quiet --tags`);
     const commitShas = commits.map(commit => commit.id);
     const before = github_context.payload.before;
     const state = {};
