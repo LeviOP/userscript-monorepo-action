@@ -37035,6 +37035,7 @@ async function tryBuildPackage(loadedPackage, buildCommand, metadata) {
             cwd: loadedPackage.path,
             env: {
                 ...process.env,
+                USERSCRIPT_VERSION: metadata.version,
                 USERSCRIPT_DOWNLOAD_URL: metadata.downloadURL,
                 USERSCRIPT_UPDATE_URL: metadata.updateURL,
             }
@@ -37106,6 +37107,17 @@ async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, f
     })));
 }
 const downloadBase = `https://github.com/${github_context.repo.owner}/${github_context.repo.repo}/releases/download/`;
+function getTimestampString() {
+    const now = new Date();
+    const timestamp = now.getUTCFullYear().toString() +
+        String(now.getUTCMonth() + 1).padStart(2, '0') +
+        String(now.getUTCDate()).padStart(2, '0') +
+        '.' +
+        String(now.getUTCHours()).padStart(2, '0') +
+        String(now.getUTCMinutes()).padStart(2, '0') +
+        String(now.getUTCSeconds()).padStart(2, '0');
+    return timestamp;
+}
 async function run() {
     if (github_context.eventName !== "push")
         throw Error(`userscript-monorepo-action expects to be run on 'push' event! (got ${github_context.eventName})`);
@@ -37209,20 +37221,12 @@ async function run() {
             if (loadedPackage.version !== packageEntry.lastVersion) {
                 // TODO: what if it's a lower (or already existing) version string?
                 const tag = `${loadedPackage.name}@${loadedPackage.version}`;
-                let scriptName = undefined;
-                let metaName = undefined;
-                for (const [filename] of builtPackage.files) {
-                    if (filename.endsWith(".user.js"))
-                        scriptName = external_node_path_namespaceObject.basename(filename);
-                    else if (filename.endsWith(".meta.js"))
-                        metaName = external_node_path_namespaceObject.basename(filename);
-                }
-                const metadata = {};
-                if (scriptName)
-                    metadata.downloadURL = downloadBase + tag + "/" + scriptName;
-                if (metaName)
-                    metadata.updateURL = downloadBase + tag + "/" + metaName;
-                const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata);
+                // a downloadURL value of "none" prevents updating (this is a specific version release, so don't upload!)
+                // VM code: https://github.com/violentmonkey/violentmonkey/blob/cd7eb045568c67ac7a016abc52e3cd96741dddf9/src/background/utils/db.js#L888
+                const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, { downloadURL: "none" }).catch((err) => {
+                    error(err);
+                    return null;
+                });
                 if (versionedBuiltPackage === null)
                     continue;
                 await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, commitSha, tag, versionedBuiltPackage.files, false);
@@ -37257,7 +37261,10 @@ async function run() {
                 metadata.downloadURL = downloadBase + tag + "/" + scriptName;
             if (metaName)
                 metadata.updateURL = downloadBase + tag + "/" + metaName;
-            const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata);
+            const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata).catch((err) => {
+                error(err);
+                return null;
+            });
             if (versionedBuiltPackage === null)
                 continue;
             await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true);
@@ -37285,7 +37292,11 @@ async function run() {
                 metadata.downloadURL = downloadBase + tag + "/" + scriptName;
             if (metaName)
                 metadata.updateURL = downloadBase + tag + "/" + metaName;
-            const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata);
+            metadata.version = loadedPackage.version + "-dev." + getTimestampString();
+            const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, metadata).catch((err) => {
+                error(err);
+                return null;
+            });
             if (versionedBuiltPackage === null)
                 continue;
             await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true);
