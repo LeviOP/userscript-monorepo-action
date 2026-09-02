@@ -37066,7 +37066,7 @@ function hashPackage(builtPackage) {
     }
     return hash.digest("hex");
 }
-async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, forceMoveTag) {
+async function publishTagAndRelease(octokit, owner, repo, sha, tagName, forceMoveTag, prerelease, files) {
     info(`Creating new release ${tagName}`);
     const tagExists = (0,external_node_child_process_namespaceObject.execSync)(`git tag -l "${tagName}"`).toString().trim() !== "";
     if (tagExists) {
@@ -37093,9 +37093,7 @@ async function publishTagAndRelease(octokit, owner, repo, sha, tagName, files, f
         repo,
         tag_name: tagName,
         name: tagName,
-        target_commitish: sha,
-        draft: false,
-        prerelease: false,
+        prerelease,
         make_latest: "false",
     });
     await Promise.all(files.map(([fileName, content]) => octokit.rest.repos.uploadReleaseAsset({
@@ -37167,7 +37165,7 @@ async function run() {
             });
             if (builtPackage === null)
                 continue;
-            info(`Built package ${loadedPackage.name}"`);
+            info(`Built package "${loadedPackage.name}"`);
             const hash = hashPackage(builtPackage);
             state[loadedPackage.name] = {
                 lastVersion: loadedPackage.version,
@@ -37207,7 +37205,7 @@ async function run() {
             });
             if (builtPackage === null)
                 continue;
-            info(`Built package ${loadedPackage.name}"`);
+            info(`Built package "${loadedPackage.name}"`);
             const hash = hashPackage(builtPackage);
             let packageEntry = state[loadedPackage.name];
             if (packageEntry === undefined) {
@@ -37223,13 +37221,14 @@ async function run() {
                 const tag = `${loadedPackage.name}@${loadedPackage.version}`;
                 // a downloadURL value of "none" prevents updating (this is a specific version release, so don't upload!)
                 // VM code: https://github.com/violentmonkey/violentmonkey/blob/cd7eb045568c67ac7a016abc52e3cd96741dddf9/src/background/utils/db.js#L888
+                // https://www.tampermonkey.net/documentation.php?locale=en&q=update_url#meta:downloadURL
                 const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, { downloadURL: "none" }).catch((err) => {
                     error(err);
                     return null;
                 });
                 if (versionedBuiltPackage === null)
                     continue;
-                await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, commitSha, tag, versionedBuiltPackage.files, false);
+                await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, commitSha, tag, false, false, versionedBuiltPackage.files);
                 packageEntry.versionHasChanged = true;
                 packageEntry.latestVersionedPackage = loadedPackage;
             }
@@ -37267,7 +37266,7 @@ async function run() {
             });
             if (versionedBuiltPackage === null)
                 continue;
-            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true);
+            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, true, false, versionedBuiltPackage.files);
         }
         if (packageEntry.hashHasChanged) {
             const loadedPackage = packageEntry.latestDevPackage;
@@ -37299,7 +37298,7 @@ async function run() {
             });
             if (versionedBuiltPackage === null)
                 continue;
-            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true);
+            await publishTagAndRelease(octokit, github_context.repo.owner, github_context.repo.repo, loadedPackage.commitSha, tag, true, true, versionedBuiltPackage.files);
         }
     }
     (0,external_node_child_process_namespaceObject.execSync)(`git checkout --quiet ${github_context.payload.after}`);

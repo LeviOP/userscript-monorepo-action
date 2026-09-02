@@ -134,8 +134,9 @@ async function publishTagAndRelease(
     repo: string,
     sha: string,
     tagName: string,
-    files: [string, Buffer][],
     forceMoveTag: boolean,
+    prerelease: boolean,
+    files: [string, Buffer][],
 ) {
     info(`Creating new release ${tagName}`);
     const tagExists = execSync(`git tag -l "${tagName}"`).toString().trim() !== "";
@@ -165,9 +166,7 @@ async function publishTagAndRelease(
         repo,
         tag_name: tagName,
         name: tagName,
-        target_commitish: sha,
-        draft: false,
-        prerelease: false,
+        prerelease,
         make_latest: "false",
     });
 
@@ -268,7 +267,7 @@ async function run() {
             });
             if (builtPackage === null) continue;
 
-            info(`Built package ${loadedPackage.name}"`);
+            info(`Built package "${loadedPackage.name}"`);
 
             const hash = hashPackage(builtPackage);
 
@@ -312,7 +311,7 @@ async function run() {
             });
             if (builtPackage === null) continue;
 
-            info(`Built package ${loadedPackage.name}"`);
+            info(`Built package "${loadedPackage.name}"`);
 
             const hash = hashPackage(builtPackage);
 
@@ -334,13 +333,14 @@ async function run() {
 
                 // a downloadURL value of "none" prevents updating (this is a specific version release, so don't upload!)
                 // VM code: https://github.com/violentmonkey/violentmonkey/blob/cd7eb045568c67ac7a016abc52e3cd96741dddf9/src/background/utils/db.js#L888
+                // https://www.tampermonkey.net/documentation.php?locale=en&q=update_url#meta:downloadURL
                 const versionedBuiltPackage = await tryBuildPackage(loadedPackage, buildCommand, { downloadURL: "none" }).catch((err: Error) => {
                     error(err);
                     return null;
                 });
                 if (versionedBuiltPackage === null) continue;
 
-                await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, commitSha, tag, versionedBuiltPackage.files, false);
+                await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, commitSha, tag, false, false, versionedBuiltPackage.files);
 
                 packageEntry.versionHasChanged = true;
                 packageEntry.latestVersionedPackage = loadedPackage;
@@ -381,7 +381,7 @@ async function run() {
             });
             if (versionedBuiltPackage === null) continue;
 
-            await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true)
+            await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, loadedPackage.commitSha, tag, true, false, versionedBuiltPackage.files);
         }
         if (packageEntry.hashHasChanged) {
             const loadedPackage = packageEntry.latestDevPackage!;
@@ -414,7 +414,7 @@ async function run() {
             });
             if (versionedBuiltPackage === null) continue;
 
-            await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, loadedPackage.commitSha, tag, versionedBuiltPackage.files, true)
+            await publishTagAndRelease(octokit, context.repo.owner, context.repo.repo, loadedPackage.commitSha, tag, true, true, versionedBuiltPackage.files)
         }
     }
 
